@@ -1,0 +1,231 @@
+# Scenario 1: Enabling Connectivity Between Two Network Namespaces and Accessing the Internet
+## Summary
+✅ Created a network namespace (`apple_ns`).  
+✅ Established a virtual network connection using a `veth` pair.  
+✅ Enabled communication between the namespace and the host.  
+✅ Configured routing and NAT for internet access.  
+✅ Verified connectivity with **ping** and **curl**.  
+✅ Cleaned up the configuration after testing.
+
+## Step 1: Start a Simple HTTP Server
+We begin by setting up a simple web server on the host machine to demonstrate network connectivity.
+
+```sh
+python3 -m http.server 8080 &
+```
+
+Test the server by making a request from the host:
+
+```sh
+curl -v http://localhost:8080/
+```
+
+---
+
+## Step 2: Create a Network Namespace
+A network namespace is an isolated network stack with its own interfaces, routes, and firewall rules.
+
+```sh
+ip netns add apple_ns
+```
+
+Verify that the namespace was created:
+
+```sh
+ip netns list
+```
+
+Start an HTTP server inside the new namespace (this will fail initially due to networking constraints):
+
+```sh
+ip netns exec apple_ns python3 -m http.server 8080
+```
+
+There is no port conflict because namespaces have independent networking stacks.
+
+---
+
+## Step 3: Check the IP Address in `apple_ns`
+Display network interfaces inside the new namespace:
+
+```sh
+ip netns exec apple_ns ip a s
+```
+
+Compare with the host:
+
+```sh
+ip address show
+```
+
+At this point, `apple_ns` only has a loopback interface and no network connectivity.
+
+---
+
+## Step 4: Bring Up the Loopback Interface
+The loopback interface (`lo`) is down by default in new namespaces, so we need to enable it:
+
+```sh
+ip netns exec apple_ns ip link set lo up
+ip netns exec apple_ns ip a s
+```
+
+---
+
+## Step 5: Create a Virtual Ethernet (veth) Pair
+A **veth pair** acts like a virtual network cable, connecting two interfaces (one in the host and one in the namespace).
+
+```sh
+ip link add host_veth type veth peer name apple_veth
+```
+
+Verify the new interfaces:
+
+```sh
+ip link list
+```
+
+Move `apple_veth` into the `apple_ns` namespace:
+
+```sh
+ip link set apple_veth netns apple_ns
+```
+
+Check that `apple_veth` has been moved successfully:
+
+```sh
+ip netns exec apple_ns ip link list
+```
+
+---
+
+## Step 6: Assign IP Addresses and Bring Up Interfaces
+Set up the `host_veth` interface (stays on the host machine):
+
+```sh
+ip link set dev host_veth up
+ip address add 10.0.0.10/24 dev host_veth
+```
+
+Verify the new configuration:
+
+```sh
+ip a s
+```
+
+Inside `apple_ns`, configure `apple_veth`:
+
+```sh
+ip netns exec apple_ns ip link set dev apple_veth up
+ip netns exec apple_ns ip address add 10.0.0.11/24 dev apple_veth
+```
+
+Check the updated network configuration inside `apple_ns`:
+
+```sh
+ip netns exec apple_ns ip a s
+```
+
+---
+
+## Step 7: Test Network Connectivity
+Ping between the host and `apple_ns`:
+
+```sh
+ping 10.0.0.10 -c 1   # From the host
+ping 10.0.0.11 -c 1   # From the host
+```
+
+Try accessing the HTTP server inside `apple_ns`:
+
+```sh
+curl -v http://10.0.0.11:8080
+```
+
+Test external connectivity:
+
+```sh
+ping 8.8.8.8 -c 1  # This will fail due to missing routing
+```
+
+From inside `apple_ns`, check connectivity:
+
+```sh
+ip netns exec apple_ns ping 10.0.0.11 -c 1
+ip netns exec apple_ns ping 10.0.0.10 -c 1
+```
+
+Ping to external IPs (like 8.8.8.8) will still **fail** since the namespace has no default gateway:
+
+```sh
+ip netns exec apple_ns ping 8.8.8.8 -c 1
+```
+
+Check if the HTTP server is reachable from the host:
+
+```sh
+ip netns exec apple_ns curl -v http://192.168.1.59:8080
+```
+
+---
+
+## Step 8: Enable Internet Access from `apple_ns`
+Set a default gateway for `apple_ns` to route traffic through `host_veth`:
+
+```sh
+ip netns exec apple_ns ip route add default via 10.0.0.10
+```
+
+Test if the namespace can now access the host's HTTP server:
+
+```sh
+ip netns exec apple_ns curl -v http://192.168.1.59:8080
+```
+
+Ping to external IPs (e.g., 8.8.8.8) will still **fail** because IP forwarding is disabled on the host.
+
+```sh
+ip netns exec apple_ns ping 8.8.8.8 -c 1
+```
+
+---
+
+## Step 9: Enable IP Forwarding on the Host
+To allow traffic to pass from `apple_ns` to the internet, we need to enable IP forwarding:
+
+```sh
+sysctl -w net.ipv4.ip_forward=1
+sysctl -p
+```
+
+Configure **iptables** to allow traffic forwarding between `host_veth` and the external network:
+
+```sh
+iptables --append FORWARD -i host_veth -o enp0s3 -j ACCEPT
+iptables --append FORWARD -i enp0s3 -o host_veth -j ACCEPT
+```
+
+---
+
+## Step 10: Enable NAT for Internet Access
+To allow packets from `apple_ns` to go out to the internet, we need to perform **SNAT (Source NAT)**:
+
+```sh
+iptables --append POSTROUTING -t nat -o enp0s3 -j MASQUERADE
+```
+
+Now, `apple_ns` should have internet access:
+
+```sh
+ip netns exec apple_ns ping 8.8.8.8 -c 1
+```
+
+---
+
+## Step 11: Cleanup
+To remove all configurations and restore the system:
+
+```sh
+./cleanUpPart1.sh
+```
+---
