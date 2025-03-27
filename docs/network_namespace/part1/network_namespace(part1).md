@@ -7,6 +7,7 @@
 ✅ Verified connectivity with **ping** and **curl**.  
 ✅ Cleaned up the configuration after testing.
 
+![Network Topology](image-1.png)
 ## Step 1: Start a Simple HTTP Server
 We begin by setting up a simple web server on the host machine to demonstrate network connectivity.
 
